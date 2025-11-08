@@ -8,7 +8,7 @@ BUILD_DIR := build
 
 # Arquivos
 TARGET := $(BUILD_DIR)/peer
-SRC := $(SRC_DIR)/main.cpp $(SRC_DIR)/Peer.cpp
+SRC := $(SRC_DIR)/main.cpp $(SRC_DIR)/Peer.cpp $(SRC_DIR)/FileProcessor.cpp
 OBJ := $(patsubst $(SRC_DIR)/%.cpp, $(BUILD_DIR)/%.o, $(SRC))
 
 

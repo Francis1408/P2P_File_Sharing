@@ -6,20 +6,12 @@
 #include <thread>
 #include <atomic>
 #include <utility> // Para std::pair
+#include "FileMetadata.h"
 
 // Estrutura para armazenar informações do vizinho
 struct NeighborInfo {
     std::string ip;
     int port;
-};
-
-// Estrutura para metadados do arquivo
-struct FileInfo {
-    std::string fileName;
-    long long fileSize;
-    int blockSize;
-    int blockCount;
-    std::string checksum;
 };
 
 class Peer {
