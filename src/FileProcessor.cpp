@@ -9,6 +9,7 @@
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -169,6 +170,49 @@ std::string bytesToHex(const unsigned char* data, std::size_t length) {
     return oss.str();
 }
 
+FileProcessor::MetadataContent parseKeyValueStream(std::istream& input) {
+    std::unordered_map<std::string, std::string> kv;
+    std::string line;
+    while (std::getline(input, line)) {
+        if (line.empty()) continue;
+        auto sep = line.find('=');
+        if (sep == std::string::npos) {
+            throw std::runtime_error("Linha inválida em metadata: " + line);
+        }
+        std::string key = line.substr(0, sep);
+        std::string value = line.substr(sep + 1);
+        kv[key] = value;
+    }
+
+    auto getValue = [&kv](const std::string& key) -> const std::string& {
+        auto it = kv.find(key);
+        if (it == kv.end()) {
+            throw std::runtime_error("Campo ausente em metadata: " + key);
+        }
+        return it->second;
+    };
+
+    FileProcessor::MetadataContent content;
+    content.info.fileName = getValue("filename");
+    content.info.fileSize = std::stoll(getValue("filesize"));
+    content.info.blockSize = std::stoi(getValue("block_size"));
+    content.info.blockCount = std::stoi(getValue("block_count"));
+    content.info.checksum = getValue("checksum");
+    content.blocksDirectory = getValue("blocks_dir");
+    return content;
+}
+
+std::string serializeKeyValue(const FileProcessor::MetadataContent& content) {
+    std::ostringstream oss;
+    oss << "filename=" << content.info.fileName << '\n'
+        << "filesize=" << content.info.fileSize << '\n'
+        << "block_size=" << content.info.blockSize << '\n'
+        << "block_count=" << content.info.blockCount << '\n'
+        << "checksum=" << content.info.checksum << '\n'
+        << "blocks_dir=" << content.blocksDirectory << '\n';
+    return oss.str();
+}
+
 }
 
 namespace FileProcessor {
@@ -234,12 +278,15 @@ MetadataCreationResult createFileMetadata(const std::string& sourceFile,
 
     auto hash = sha.finalize();
 
-    FileInfo info{
-        sourcePath.filename().string(),
-        totalBytes,
-        static_cast<int>(blockSize),
-        blockCount,
-        bytesToHex(hash.data(), hash.size())
+    MetadataContent content{
+        FileInfo{
+            sourcePath.filename().string(),
+            totalBytes,
+            static_cast<int>(blockSize),
+            blockCount,
+            bytesToHex(hash.data(), hash.size())
+        },
+        fileBlocksDir.string()
     };
 
     fs::path metadataPath = metadataRootPath / (sourcePath.filename().string() + ".meta");
@@ -248,14 +295,26 @@ MetadataCreationResult createFileMetadata(const std::string& sourceFile,
         throw std::runtime_error("Não foi possível criar o arquivo de metadata: " + metadataPath.string());
     }
 
-    metaFile << "filename=" << info.fileName << '\n'
-             << "filesize=" << info.fileSize << '\n'
-             << "block_size=" << info.blockSize << '\n'
-             << "block_count=" << info.blockCount << '\n'
-             << "checksum=" << info.checksum << '\n'
-             << "blocks_dir=" << fileBlocksDir.string() << '\n';
+    metaFile << serializeKeyValue(content);
 
-    return MetadataCreationResult{info, fileBlocksDir.string(), metadataPath.string()};
+    return MetadataCreationResult{content, metadataPath.string()};
+}
+
+MetadataContent loadMetadataFile(const std::string& metadataPath) {
+    std::ifstream input(metadataPath);
+    if (!input) {
+        throw std::runtime_error("Não foi possível abrir o arquivo de metadata: " + metadataPath);
+    }
+    return parseKeyValueStream(input);
+}
+
+MetadataContent parseMetadataString(const std::string& data) {
+    std::istringstream stream(data);
+    return parseKeyValueStream(stream);
+}
+
+std::string serializeMetadata(const MetadataContent& content) {
+    return serializeKeyValue(content);
 }
 
 } // namespace FileProcessor
