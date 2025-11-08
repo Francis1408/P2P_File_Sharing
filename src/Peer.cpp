@@ -1,20 +1,18 @@
 #include "Peer.h"
 #include <iostream>
 #include <cstring>
+#include <cerrno>
 #include <unistd.h>
 #include <arpa/inet.h>
 
 // Tamanho do chunck armazenado pelo peer
 #define BUFFER_SIZE 1024
 
-
-// Construtor
-Peer::Peer(int myPort, const std::string& neighborIP, int neighborPort)
-    : myPort(myPort), neighborIP(neighborIP), neighborPort(neighborPort), running(true) {}
-
+// Construtor atualizado para aceitar uma lista de vizinhos
+Peer::Peer(int myPort, const std::vector<NeighborInfo>& neighbors)
+    : myPort(myPort), neighbors(neighbors), running(true) {}
 
 void Peer::start() {
-
     // Cria e incia as threads de cliente e servidor
     std::thread serverThread(&Peer::serverLoop, this);
     std::thread clientThread(&Peer::clientLoop, this);
@@ -24,73 +22,49 @@ void Peer::start() {
 }
 
 void Peer::serverLoop() {
-
-// ########### CRIA O SOCKET ####################
-/* socket(int __domain, int __type, int __protocol)
-
-    domain(AF_INET) -> Utiliza protocolo IPV4
-    type(SOCK_STREAM) -> Utiliza protocolo TCP  */
-
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-//##############################################
-    if (sockfd < 0) throw std::runtime_error("ERRO ao criar socket servidor");
+    if (sockfd < 0) {
+        throw std::runtime_error(std::string("ERRO ao criar socket servidor: ") + std::strerror(errno));
+    }
 
-    // Prepara a estrutura sockaddr_in que guarda o endereço de IP e a porta do vizinho
     sockaddr_in serv_addr{};
-
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_addr.s_addr = INADDR_ANY;
     serv_addr.sin_port = htons(myPort);
 
-// ####### ATRELA O ADDR AO SOCKET #############
-    int bind_success = bind(sockfd, (struct sockaddr * ) &serv_addr, sizeof(serv_addr));
-//##############################################
-
-    if(bind_success < 0) 
-        throw std::runtime_error("ERRO ao atrelar o endereço ao socket");
-
-// ####### ESCUTA CONEXÕES NO SOCKET ###########
-/* listen(int __fd, int __n)
-
-    fd(sockfd) -> Escuta a porta sockfd
-    n(5) -> Suporta até 5 conexões  */
-    listen(sockfd, 5);
-//##############################################
-std::cout << "[Servidor " << myPort << "] Aguardando conexões...\n";
-
-
-    // LOOP PRINCIPAL DE EXECUÇÃO 
-    while (running) {
-
-        // Limpa qualquer informação dentro do endereço do cliente
-        sockaddr_in cli_addr{};
-        socklen_t clilen = sizeof(cli_addr);
-
-    // ######### BLOQUEIA A EXECUÇÃO ATÉ QUE ALGUEM SE CONCTE ##################
-        // Cria um socket dedicado à conversa entre peers 
-        int newsock = accept(sockfd, (struct sockaddr *) &cli_addr, &clilen);
-    //#########################################################################
-
-        // Caso a requisição seja aceita, repassa o chunck para o solicitante
-        if (newsock >= 0)
-            std::thread(&Peer::handleConnection, this, newsock).detach();
-        
+    // Permite a reutilização do endereço para evitar erros de "Address already in use"
+    int opt = 1;
+    if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
+        throw std::runtime_error(std::string("ERRO ao configurar SO_REUSEADDR: ") + std::strerror(errno));
     }
 
-    // Fecha a conexão
+    if (bind(sockfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0) {
+        throw std::runtime_error(std::string("ERRO ao atrelar o endereço ao socket: ") + std::strerror(errno));
+    }
+
+    listen(sockfd, 5);
+    std::cout << "[Servidor " << myPort << "] Aguardando conexões...\n";
+
+    while (running) {
+        sockaddr_in cli_addr{};
+        socklen_t clilen = sizeof(cli_addr);
+        int newsock = accept(sockfd, (struct sockaddr *) &cli_addr, &clilen);
+
+        if (newsock >= 0) {
+            std::thread(&Peer::handleConnection, this, newsock).detach();
+        }
+    }
+
     close(sockfd);
 }
 
 void Peer::handleConnection(int clientSock) {
-
-    // Prepara o buffer para ler a mensagem enviada pelo peer solicitante
     char buffer[BUFFER_SIZE];
-    memset(buffer, 0, BUFFER_SIZE); // Limpa o buffer
-    read(clientSock, buffer, BUFFER_SIZE); // Lê o texto 
+    memset(buffer, 0, BUFFER_SIZE);
+    read(clientSock, buffer, BUFFER_SIZE);
 
     std::cout << "[Servidor " << myPort << "] Recebido: " << buffer << "\n";
 
-    // Envia a resposta para o vizinho de que recebeu a mensagem
     std::string response = "Oi, sou o peer na porta " + std::to_string(myPort);
     write(clientSock, response.c_str(), response.size());
 
@@ -98,62 +72,39 @@ void Peer::handleConnection(int clientSock) {
 }
 
 void Peer::clientLoop() {
-
-    sleep(2); // espera o outro peer subir
+    sleep(2); // Espera os outros peers subirem
 
     while (running) {
+        for (const auto& neighbor : neighbors) {
+            int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+            if (sockfd < 0) {
+                std::cerr << "ERRO ao criar socket cliente\n";
+                continue; // Tenta o próximo vizinho
+            }
 
-    // ########### CRIA O SOCKET ####################
-    /* socket(int __domain, int __type, int __protocol)
+            sockaddr_in serv_addr{};
+            serv_addr.sin_family = AF_INET;
+            serv_addr.sin_port = htons(neighbor.port);
+            inet_pton(AF_INET, neighbor.ip.c_str(), &serv_addr.sin_addr);
 
-        domain(AF_INET) -> Utiliza protocolo IPV4
-        type(SOCK_STREAM) -> Utiliza protocolo TCP  */
+            if (connect(sockfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0) {
+                std::cout << "[Cliente " << myPort << "] Falha na conexão com " << neighbor.ip << ":" << neighbor.port << "\n";
+                close(sockfd);
+                continue; // Tenta o próximo vizinho
+            }
 
-        int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    //##############################################
-        if (sockfd < 0) {
-            std::cerr << "ERRO ao criar socket cliente\n";
-            sleep(3);
-            continue;
-        }
+            std::cout << "[Cliente " << myPort << "] Conectado com " << neighbor.ip << ":" << neighbor.port << "\n";
+            
+            std::string msg = "Olá vizinho, sou o peer " + std::to_string(myPort);
+            write(sockfd, msg.c_str(), msg.size());
 
-        // Prepara a estrutura sockaddr_in que guarda o endereço de IP e a porta do servidor
-        sockaddr_in serv_addr{};
-        serv_addr.sin_family = AF_INET;
-        serv_addr.sin_port = htons(neighborPort); // Porta do servidor 
-        // Transforma uma string de IP em número binário que o socket entende
-        inet_pton(AF_INET, neighborIP.c_str(), &serv_addr.sin_addr);
+            char buffer[BUFFER_SIZE];
+            memset(buffer, 0, BUFFER_SIZE);
+            read(sockfd, buffer, BUFFER_SIZE);
+            std::cout << "[Cliente " << myPort << "] Resposta de " << neighbor.ip << ":" << neighbor.port << ": " << buffer << "\n";
 
-
-    // ########### CONECTA-SE AO SERVIDOR ####################
-    /* connect(int __fd, const struct *__addr, socklen_t __len)
-        
-        fd(sockfd) = Socket a se conectar
-        addr(serv_addr) = Endereço do socket
-        len() = Tamanho do endereço do socket
-    */
-        int connect_att = connect(sockfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr));
-    //##############################################
-    
-        if(connect_att < 0) {
-            std::cout << "[Cliente " << myPort << "] Falha na conexão, tentando novamente...\n";
             close(sockfd);
-            sleep(3);
-            continue;
         }
-
-        // Envia mensagem para o vizinho
-        std::string msg = "Olá vizinho, sou o peer " + std::to_string(myPort);
-        write(sockfd, msg.c_str(), msg.size());
-
-        // Lê a reposta do vizinho
-        char buffer[BUFFER_SIZE];
-        memset(buffer, 0, BUFFER_SIZE);
-        read(sockfd, buffer, BUFFER_SIZE);
-        std::cout << "[Cliente " << myPort << "] Resposta: " << buffer << "\n";
-
-        close(sockfd);
-        sleep(5);
-
+        sleep(5); // Espera 5 segundos antes de tentar se conectar a todos os vizinhos novamente
     }
 }

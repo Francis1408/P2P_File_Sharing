@@ -8,7 +8,7 @@ BUILD_DIR := build
 
 # Arquivos
 TARGET := $(BUILD_DIR)/peer
-SRC := $(SRC_DIR)/main.cpp $(SRC_DIR)/peer.cpp
+SRC := $(SRC_DIR)/main.cpp $(SRC_DIR)/Peer.cpp
 OBJ := $(patsubst $(SRC_DIR)/%.cpp, $(BUILD_DIR)/%.o, $(SRC))
 
 
@@ -20,7 +20,7 @@ $(TARGET): $(OBJ)
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 # Compila o objeto
-$(OBJ): $(SRC)
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp
 	@mkdir -p $(BUILD_DIR)
 	@echo "⚙️  Compilando $<..."
 	$(CXX) $(CXXFLAGS) -c $< -o $@

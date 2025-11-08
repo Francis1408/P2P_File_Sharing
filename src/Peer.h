@@ -5,38 +5,41 @@
 #include <vector>
 #include <thread>
 #include <atomic>
+#include <utility> // Para std::pair
 
-/* ######### CLASSE PEER ############ 
-  - myPort : Porta do socket que o peer está conectado
-  - neighborIP: Endereço IP dos vizinhos
-  - neighborPort: Porta do socket do vizinho
-  - running: Flag para verificar se o peer está ativo
-  
-  - serverLoop() : servidor -> escuta as requisições de chuncks de arquivo
-  - clientLoop() : cliente -> envia chuncks de mensagem
-  - start() : Inicia threads de cliente e servidor
-  - handleConnection() : Realiza a troca de mensagens entre peers por meio dos buffers
-
-*/
-
-class Peer {
-
-    public: 
-        Peer(int myPort, const std::string& neighborIP, int neighborPort);
-        void start();
-    
-    private:
-        int myPort;
-        std::string neighborIP;
-        int neighborPort;
-        std::atomic<bool> running;
-
-        void serverLoop();
-        void clientLoop();
-
-        void handleConnection(int clientSock);
-
+// Estrutura para armazenar informações do vizinho
+struct NeighborInfo {
+    std::string ip;
+    int port;
 };
 
+// Estrutura para metadados do arquivo
+struct FileInfo {
+    std::string fileName;
+    long long fileSize;
+    int blockSize;
+    int blockCount;
+    std::string checksum;
+};
+
+class Peer {
+public:
+    // Construtor atualizado para aceitar uma lista de vizinhos
+    Peer(int myPort, const std::vector<NeighborInfo>& neighbors);
+    void start();
+
+private:
+    int myPort;
+    std::vector<NeighborInfo> neighbors;
+    std::atomic<bool> running;
+
+    // Gerenciamento de arquivos e blocos
+    FileInfo fileInfo;
+    std::vector<bool> ownedBlocks;
+
+    void serverLoop();
+    void clientLoop();
+    void handleConnection(int clientSock);
+};
 
 #endif
