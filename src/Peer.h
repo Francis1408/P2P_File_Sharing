@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <filesystem>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
@@ -29,7 +30,6 @@ private:
     std::atomic<bool> running;
     std::string metadataPath;
     std::string downloadRoot;
-    bool downloadComplete = false;
     bool fileAssembled = false;
 
     // Gerenciamento de arquivos e blocos
@@ -38,6 +38,7 @@ private:
 
     std::optional<FileProcessor::MetadataContent> localMetadata;
     std::optional<FileProcessor::MetadataContent> remoteMetadata;
+    mutable std::mutex ownedBlocksMutex;
 
     void serverLoop();
     void clientLoop();
@@ -51,6 +52,8 @@ private:
     int findNextMissingBlock() const;
     void tryAssembleFile();
     std::filesystem::path ensureDownloadDir() const;
+    bool hasBlock(int blockIndex) const;
+    bool hasAllBlocks() const;
 };
 
 #endif
