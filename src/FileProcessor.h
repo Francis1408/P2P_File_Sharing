@@ -26,6 +26,7 @@ MetadataCreationResult createFileMetadata(const std::string& sourceFile,
 MetadataContent loadMetadataFile(const std::string& metadataPath);
 MetadataContent parseMetadataString(const std::string& data);
 std::string serializeMetadata(const MetadataContent& content);
+std::string computeFileChecksum(const std::string& filePath);
 
 }
 

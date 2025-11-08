@@ -2,6 +2,7 @@
 #define PEER_H
 
 #include <atomic>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <thread>
@@ -28,6 +29,8 @@ private:
     std::atomic<bool> running;
     std::string metadataPath;
     std::string downloadRoot;
+    bool downloadComplete = false;
+    bool fileAssembled = false;
 
     // Gerenciamento de arquivos e blocos
     FileInfo fileInfo;
@@ -45,6 +48,9 @@ private:
 
     bool requestBlockFromNeighbor(const NeighborInfo& neighbor, int blockIndex);
     bool saveReceivedBlock(int blockIndex, const std::vector<std::uint8_t>& data);
+    int findNextMissingBlock() const;
+    void tryAssembleFile();
+    std::filesystem::path ensureDownloadDir() const;
 };
 
 #endif

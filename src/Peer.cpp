@@ -11,6 +11,7 @@
 #include <iostream>
 #include <iterator>
 #include <unistd.h>
+#include <vector>
 
 // Tamanho do chunck armazenado pelo peer
 #define BUFFER_SIZE 1024
@@ -150,7 +151,8 @@ void Peer::clientLoop() {
                 try {
                     remoteMetadata = FileProcessor::parseMetadataString(metadataText);
                     const auto& info = remoteMetadata->info;
-                    if (ownedBlocks.empty()) {
+                    fileInfo = info;
+                    if (ownedBlocks.empty() || ownedBlocks.size() != static_cast<std::size_t>(info.blockCount)) {
                         ownedBlocks.assign(info.blockCount, localMetadata.has_value());
                         if (!localMetadata) {
                             std::fill(ownedBlocks.begin(), ownedBlocks.end(), false);
@@ -160,8 +162,14 @@ void Peer::clientLoop() {
                               << neighbor.ip << ":" << neighbor.port << " -> arquivo "
                               << info.fileName << ", blocos: " << info.blockCount
                               << ", checksum: " << info.checksum << std::endl;
-                    if (!localMetadata && !ownedBlocks.empty() && !ownedBlocks[0]) {
-                        requestBlockFromNeighbor(neighbor, 0);
+                    if (!localMetadata && !ownedBlocks.empty()) {
+                        int nextBlock = findNextMissingBlock();
+                        if (nextBlock >= 0) {
+                            requestBlockFromNeighbor(neighbor, nextBlock);
+                        } else {
+                            downloadComplete = true;
+                            tryAssembleFile();
+                        }
                     }
                 } catch (const std::exception& e) {
                     std::cerr << "[Cliente " << myPort << "] Falha ao interpretar metadata: "
@@ -177,7 +185,7 @@ void Peer::clientLoop() {
 
             close(sockfd);
         }
-        sleep(5); // Espera 5 segundos antes de tentar se conectar a todos os vizinhos novamente
+        sleep(1); // Espera 5 segundos antes de tentar se conectar a todos os vizinhos novamente
     }
 }
 
@@ -322,11 +330,9 @@ bool Peer::saveReceivedBlock(int blockIndex, const std::vector<std::uint8_t>& da
         return false;
     }
 
-    namespace fs = std::filesystem;
-    fs::path targetDir = fs::path(downloadRoot) / remoteMetadata->info.fileName;
-    fs::create_directories(targetDir);
+    auto targetDir = ensureDownloadDir();
 
-    fs::path blockPath = targetDir / ("block_" + std::to_string(blockIndex) + ".bin");
+    std::filesystem::path blockPath = targetDir / ("block_" + std::to_string(blockIndex) + ".bin");
     std::ofstream output(blockPath, std::ios::binary);
     if (!output) {
         std::cerr << "[Cliente " << myPort << "] Não foi possível salvar bloco em "
@@ -336,6 +342,8 @@ bool Peer::saveReceivedBlock(int blockIndex, const std::vector<std::uint8_t>& da
     if (!data.empty()) {
         output.write(reinterpret_cast<const char*>(data.data()), data.size());
     }
+    output.flush();
+    output.close();
 
     if (static_cast<std::size_t>(blockIndex) >= ownedBlocks.size()) {
         ownedBlocks.resize(blockIndex + 1, false);
@@ -344,5 +352,80 @@ bool Peer::saveReceivedBlock(int blockIndex, const std::vector<std::uint8_t>& da
 
     std::cout << "[Cliente " << myPort << "] Bloco " << blockIndex
               << " salvo em " << blockPath << std::endl;
+
+    int nextBlock = findNextMissingBlock();
+    if (nextBlock < 0) {
+        downloadComplete = true;
+        tryAssembleFile();
+    }
     return true;
+}
+
+int Peer::findNextMissingBlock() const {
+    for (std::size_t i = 0; i < ownedBlocks.size(); ++i) {
+        if (!ownedBlocks[i]) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+std::filesystem::path Peer::ensureDownloadDir() const {
+    namespace fs = std::filesystem;
+    fs::path targetDir = fs::path(downloadRoot) / (remoteMetadata ? remoteMetadata->info.fileName : "unknown");
+    fs::create_directories(targetDir);
+    return targetDir;
+}
+
+void Peer::tryAssembleFile() {
+    if (!remoteMetadata || fileAssembled) {
+        return;
+    }
+    if (findNextMissingBlock() >= 0) {
+        return;
+    }
+
+    auto targetDir = ensureDownloadDir();
+    namespace fs = std::filesystem;
+    fs::path outputPath = targetDir / ("complete_" + remoteMetadata->info.fileName);
+
+    std::ofstream output(outputPath, std::ios::binary | std::ios::trunc);
+    if (!output) {
+        std::cerr << "[Cliente " << myPort << "] Não foi possível criar arquivo final em "
+                  << outputPath << std::endl;
+        return;
+    }
+
+    for (int i = 0; i < remoteMetadata->info.blockCount; ++i) {
+        fs::path blockPath = targetDir / ("block_" + std::to_string(i) + ".bin");
+        std::ifstream blockFile(blockPath, std::ios::binary);
+        if (!blockFile) {
+            std::cerr << "[Cliente " << myPort << "] Bloco faltando durante montagem: "
+                      << blockPath << std::endl;
+            return;
+        }
+        std::vector<char> buffer((std::istreambuf_iterator<char>(blockFile)),
+                                 std::istreambuf_iterator<char>());
+        if (!buffer.empty()) {
+            output.write(buffer.data(), buffer.size());
+        }
+    }
+
+    output.flush();
+    output.close();
+
+    try {
+        auto checksum = FileProcessor::computeFileChecksum(outputPath.string());
+        if (checksum == remoteMetadata->info.checksum) {
+            std::cout << "[Cliente " << myPort << "] Download completo! Arquivo reconstituído em "
+                      << outputPath << " (checksum OK)" << std::endl;
+        } else {
+            std::cerr << "[Cliente " << myPort << "] Checksum divergente: esperado "
+                      << remoteMetadata->info.checksum << ", obtido " << checksum << std::endl;
+        }
+        fileAssembled = true;
+    } catch (const std::exception& e) {
+        std::cerr << "[Cliente " << myPort << "] Falha ao calcular checksum: "
+                  << e.what() << std::endl;
+    }
 }

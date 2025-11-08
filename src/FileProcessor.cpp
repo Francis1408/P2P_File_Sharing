@@ -317,4 +317,26 @@ std::string serializeMetadata(const MetadataContent& content) {
     return serializeKeyValue(content);
 }
 
+std::string computeFileChecksum(const std::string& filePath) {
+    std::ifstream input(filePath, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error("Não foi possível abrir o arquivo para checksum: " + filePath);
+    }
+
+    Sha256 sha;
+    std::array<char, 4096> buffer;
+    while (input) {
+        input.read(buffer.data(), buffer.size());
+        std::streamsize readBytes = input.gcount();
+        if (readBytes <= 0) {
+            break;
+        }
+        sha.update(reinterpret_cast<const unsigned char*>(buffer.data()),
+                   static_cast<std::size_t>(readBytes));
+    }
+
+    auto hash = sha.finalize();
+    return bytesToHex(hash.data(), hash.size());
+}
+
 } // namespace FileProcessor
