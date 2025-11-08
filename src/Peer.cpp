@@ -2,11 +2,15 @@
 
 #include "Protocol.h"
 
+#include <algorithm>
+#include <arpa/inet.h>
 #include <cerrno>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <unistd.h>
-#include <arpa/inet.h>
 
 // Tamanho do chunck armazenado pelo peer
 #define BUFFER_SIZE 1024
@@ -16,10 +20,13 @@ Peer::Peer(int myPort, const std::vector<NeighborInfo>& neighbors, std::string m
     : myPort(myPort),
       neighbors(neighbors),
       running(true),
-      metadataPath(std::move(metadataPath)) {
+      metadataPath(std::move(metadataPath)),
+      downloadRoot("downloads") {
     if (!this->metadataPath.empty()) {
         try {
             localMetadata = FileProcessor::loadMetadataFile(this->metadataPath);
+            fileInfo = localMetadata->info;
+            ownedBlocks.assign(fileInfo.blockCount, true);
             std::cout << "[Peer " << myPort << "] Metadata local carregada de " << this->metadataPath << "\n";
         } catch (const std::exception& e) {
             std::cerr << "[Peer " << myPort << "] Falha ao carregar metadata: " << e.what() << "\n";
@@ -86,6 +93,9 @@ void Peer::handleConnection(int clientSock) {
         case Protocol::MessageType::GET_METADATA:
             handleGetMetadata(clientSock);
             break;
+        case Protocol::MessageType::REQUEST_BLOCK:
+            handleRequestBlock(clientSock, payload);
+            break;
         default:
             std::cout << "[Servidor " << myPort << "] Tipo de mensagem não suportado: "
                       << static_cast<int>(type) << std::endl;
@@ -140,10 +150,19 @@ void Peer::clientLoop() {
                 try {
                     remoteMetadata = FileProcessor::parseMetadataString(metadataText);
                     const auto& info = remoteMetadata->info;
+                    if (ownedBlocks.empty()) {
+                        ownedBlocks.assign(info.blockCount, localMetadata.has_value());
+                        if (!localMetadata) {
+                            std::fill(ownedBlocks.begin(), ownedBlocks.end(), false);
+                        }
+                    }
                     std::cout << "[Cliente " << myPort << "] Metadata recebida de "
                               << neighbor.ip << ":" << neighbor.port << " -> arquivo "
                               << info.fileName << ", blocos: " << info.blockCount
                               << ", checksum: " << info.checksum << std::endl;
+                    if (!localMetadata && !ownedBlocks.empty() && !ownedBlocks[0]) {
+                        requestBlockFromNeighbor(neighbor, 0);
+                    }
                 } catch (const std::exception& e) {
                     std::cerr << "[Cliente " << myPort << "] Falha ao interpretar metadata: "
                               << e.what() << std::endl;
@@ -177,9 +196,153 @@ void Peer::handleGetMetadata(int clientSock) {
     }
 }
 
+void Peer::handleRequestBlock(int clientSock, const std::vector<std::uint8_t>& payload) {
+    if (!localMetadata) {
+        sendErrorMessage(clientSock, "Peer não possui blocos para compartilhar");
+        return;
+    }
+
+    if (payload.size() < sizeof(std::uint32_t)) {
+        sendErrorMessage(clientSock, "Payload REQUEST_BLOCK inválido");
+        return;
+    }
+
+    std::uint32_t blockIndexNetwork;
+    std::memcpy(&blockIndexNetwork, payload.data(), sizeof(blockIndexNetwork));
+    int blockIndex = static_cast<int>(ntohl(blockIndexNetwork));
+
+    if (blockIndex < 0 || blockIndex >= localMetadata->info.blockCount) {
+        sendErrorMessage(clientSock, "Índice de bloco inválido");
+        return;
+    }
+
+    namespace fs = std::filesystem;
+    fs::path blockPath = fs::path(localMetadata->blocksDirectory) /
+                         ("block_" + std::to_string(blockIndex) + ".bin");
+
+    std::ifstream blockFile(blockPath, std::ios::binary);
+    if (!blockFile) {
+        sendErrorMessage(clientSock, "Bloco não encontrado");
+        return;
+    }
+
+    std::vector<std::uint8_t> blockData((std::istreambuf_iterator<char>(blockFile)),
+                                        std::istreambuf_iterator<char>());
+
+    std::vector<std::uint8_t> response(sizeof(std::uint32_t) + blockData.size());
+    std::uint32_t indexNetwork = htonl(static_cast<std::uint32_t>(blockIndex));
+    std::memcpy(response.data(), &indexNetwork, sizeof(indexNetwork));
+    if (!blockData.empty()) {
+        std::memcpy(response.data() + sizeof(indexNetwork), blockData.data(), blockData.size());
+    }
+
+    if (!Protocol::sendMessage(clientSock, Protocol::MessageType::BLOCK_DATA, response)) {
+        std::cerr << "[Servidor " << myPort << "] Falha ao enviar bloco " << blockIndex << std::endl;
+    } else {
+        std::cout << "[Servidor " << myPort << "] Servindo bloco " << blockIndex << std::endl;
+    }
+}
+
 void Peer::sendErrorMessage(int clientSock, const std::string& message) {
     std::vector<std::uint8_t> payload(message.begin(), message.end());
     if (!Protocol::sendMessage(clientSock, Protocol::MessageType::ERROR, payload)) {
         std::cerr << "[Servidor " << myPort << "] Falha ao enviar mensagem de erro" << std::endl;
     }
+}
+
+bool Peer::requestBlockFromNeighbor(const NeighborInfo& neighbor, int blockIndex) {
+    if (!remoteMetadata) {
+        return false;
+    }
+
+    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd < 0) {
+        std::cerr << "[Cliente " << myPort << "] ERRO ao criar socket para bloco" << std::endl;
+        return false;
+    }
+
+    sockaddr_in serv_addr{};
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_port = htons(neighbor.port);
+    inet_pton(AF_INET, neighbor.ip.c_str(), &serv_addr.sin_addr);
+
+    if (connect(sockfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0) {
+        std::cout << "[Cliente " << myPort << "] Falha ao conectar para solicitar bloco "
+                  << blockIndex << std::endl;
+        close(sockfd);
+        return false;
+    }
+
+    std::uint32_t indexNetwork = htonl(static_cast<std::uint32_t>(blockIndex));
+    std::vector<std::uint8_t> payload(sizeof(indexNetwork));
+    std::memcpy(payload.data(), &indexNetwork, sizeof(indexNetwork));
+
+    if (!Protocol::sendMessage(sockfd, Protocol::MessageType::REQUEST_BLOCK, payload)) {
+        std::cerr << "[Cliente " << myPort << "] Falha ao enviar REQUEST_BLOCK" << std::endl;
+        close(sockfd);
+        return false;
+    }
+
+    Protocol::MessageType responseType;
+    std::vector<std::uint8_t> responsePayload;
+    if (!Protocol::receiveMessage(sockfd, responseType, responsePayload)) {
+        std::cerr << "[Cliente " << myPort << "] Falha ao receber bloco" << std::endl;
+        close(sockfd);
+        return false;
+    }
+
+    bool success = false;
+    if (responseType == Protocol::MessageType::BLOCK_DATA) {
+        if (responsePayload.size() < sizeof(std::uint32_t)) {
+            std::cerr << "[Cliente " << myPort << "] Payload BLOCK_DATA inválido" << std::endl;
+        } else {
+            std::uint32_t idxNetwork;
+            std::memcpy(&idxNetwork, responsePayload.data(), sizeof(idxNetwork));
+            int receivedIndex = static_cast<int>(ntohl(idxNetwork));
+            std::vector<std::uint8_t> blockBytes(responsePayload.begin() + sizeof(idxNetwork),
+                                                 responsePayload.end());
+            if (saveReceivedBlock(receivedIndex, blockBytes)) {
+                success = true;
+            }
+        }
+    } else if (responseType == Protocol::MessageType::ERROR) {
+        std::string errorMsg(responsePayload.begin(), responsePayload.end());
+        std::cerr << "[Cliente " << myPort << "] Erro ao requisitar bloco: " << errorMsg << std::endl;
+    } else {
+        std::cout << "[Cliente " << myPort << "] Resposta inesperada ao requisitar bloco: "
+                  << static_cast<int>(responseType) << std::endl;
+    }
+
+    close(sockfd);
+    return success;
+}
+
+bool Peer::saveReceivedBlock(int blockIndex, const std::vector<std::uint8_t>& data) {
+    if (!remoteMetadata) {
+        return false;
+    }
+
+    namespace fs = std::filesystem;
+    fs::path targetDir = fs::path(downloadRoot) / remoteMetadata->info.fileName;
+    fs::create_directories(targetDir);
+
+    fs::path blockPath = targetDir / ("block_" + std::to_string(blockIndex) + ".bin");
+    std::ofstream output(blockPath, std::ios::binary);
+    if (!output) {
+        std::cerr << "[Cliente " << myPort << "] Não foi possível salvar bloco em "
+                  << blockPath << std::endl;
+        return false;
+    }
+    if (!data.empty()) {
+        output.write(reinterpret_cast<const char*>(data.data()), data.size());
+    }
+
+    if (static_cast<std::size_t>(blockIndex) >= ownedBlocks.size()) {
+        ownedBlocks.resize(blockIndex + 1, false);
+    }
+    ownedBlocks[blockIndex] = true;
+
+    std::cout << "[Cliente " << myPort << "] Bloco " << blockIndex
+              << " salvo em " << blockPath << std::endl;
+    return true;
 }

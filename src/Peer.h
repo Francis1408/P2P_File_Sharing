@@ -27,6 +27,7 @@ private:
     std::vector<NeighborInfo> neighbors;
     std::atomic<bool> running;
     std::string metadataPath;
+    std::string downloadRoot;
 
     // Gerenciamento de arquivos e blocos
     FileInfo fileInfo;
@@ -39,7 +40,11 @@ private:
     void clientLoop();
     void handleConnection(int clientSock);
     void handleGetMetadata(int clientSock);
+    void handleRequestBlock(int clientSock, const std::vector<std::uint8_t>& payload);
     void sendErrorMessage(int clientSock, const std::string& message);
+
+    bool requestBlockFromNeighbor(const NeighborInfo& neighbor, int blockIndex);
+    bool saveReceivedBlock(int blockIndex, const std::vector<std::uint8_t>& data);
 };
 
 #endif
