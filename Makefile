@@ -11,6 +11,9 @@ TARGET := $(BUILD_DIR)/peer
 SRC := $(SRC_DIR)/main.cpp $(SRC_DIR)/Peer.cpp $(SRC_DIR)/FileProcessor.cpp $(SRC_DIR)/Protocol.cpp
 OBJ := $(patsubst $(SRC_DIR)/%.cpp, $(BUILD_DIR)/%.o, $(SRC))
 
+CONFIG_FILE := tests/test1.conf
+FILE_TO_SHARE := data/exemplo.txt
+BLOCK_SIZE := 1024
 
 all: $(TARGET)
 
@@ -25,17 +28,40 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp
 	@echo "⚙️  Compilando $<..."
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-# -------------------------
-#  Execução simplificada
-# -------------------------
+# ---------------------------------
+# Gera o metadata do arquivo base
+# ---------------------------------
+meta:
+	@echo "📦 Gerando metadados de '$(FILE_TO_SHARE)'..."
+	@$(TARGET) --create-meta $(FILE_TO_SHARE) $(BLOCK_SIZE)
 
-# Executa dois peers locais (exemplo)
+# ---------------------------------
+# Lê o arquivo teste especifico e inicia os peers
+# ---------------------------------
 run:
-	@echo "🚀 Iniciando Peer A (porta 5000, vizinho 127.0.0.1:5001)..."
-	@gnome-terminal -- bash -c "$(TARGET) 5000 127.0.0.1 5001; exec bash" &
-	@sleep 1
-	@echo "🚀 Iniciando Peer B (porta 5001, vizinho 127.0.0.1:5000)..."
-	@gnome-terminal -- bash -c "$(TARGET) 5001 127.0.0.1 5000; exec bash" &
+	@if [ -z "$(TEST)" ]; then \
+		echo "❌ Uso: make run TEST=data/tests/test1_2peers_small_1KB.config"; exit 1; \
+	fi
+	@if [ ! -f $(TEST) ]; then \
+		echo "❌ Arquivo $(TEST) não encontrado!"; exit 1; \
+	fi
+	@echo "🚀 Executando configuração $(TEST)..."
+
+	# Inicia Seeders
+	@grep "^SEEDER" $(TEST) | while read -r _ port meta neighbors; do \
+		echo "🌱 Seeder $$port -> $$neighbors"; \
+		gnome-terminal -- bash -c "$(TARGET) --meta $$meta $$port $$neighbors; exec bash" & \
+		sleep 2; \
+	done
+
+	# Inicia Leechers
+	@grep "^LEECHER" $(TEST) | while read -r _ port neighbors; do \
+		echo "📥 Leecher $$port -> $$neighbors"; \
+		gnome-terminal -- bash -c "$(TARGET) $$port $$neighbors; exec bash" & \
+		sleep 0.5; \
+	done
+
+	@echo "✅ Todos os peers foram inicializados!"
 
 # -------------------------
 #  Limpeza
