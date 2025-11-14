@@ -116,6 +116,13 @@ void Peer::clientLoop() {
     sleep(2); // Espera os outros peers subirem
 
     while (running) {
+
+        // Caso tenha terminado o download de todo os chuncks
+         if (!downloading) {
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+            continue;  // Servidor permanece ativo
+        }
+
         for (const auto& neighbor : neighbors) {
             int sockfd = socket(AF_INET, SOCK_STREAM, 0);
             if (sockfd < 0) {
@@ -464,6 +471,8 @@ void Peer::tryAssembleFile() {
     try {
         auto checksum = FileProcessor::computeFileChecksum(outputPath.string());
         if (checksum == remoteMetadata->info.checksum) {
+            // Finaliza a função de cliente
+            downloading = false;
             std::cout << "[Cliente " << myPort << "] Download completo! Arquivo reconstituído em "
                       << outputPath << " (checksum OK)" << std::endl;
         } else {

@@ -30,6 +30,7 @@ private:
     int myPort;
     std::vector<NeighborInfo> neighbors;
     std::atomic<bool> running;
+    std::atomic<bool> downloading { true };
     std::string metadataPath;
     std::string downloadRoot;
     bool fileAssembled = false;
