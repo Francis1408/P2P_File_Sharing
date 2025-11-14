@@ -9,6 +9,8 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#include <netinet/in.h> 
+#include <arpa/inet.h>
 
 #include "FileProcessor.h"
 
@@ -42,9 +44,9 @@ private:
 
     void serverLoop();
     void clientLoop();
-    void handleConnection(int clientSock);
+    void handleConnection(int clientSock, sockaddr_in clientAddr);
     void handleGetMetadata(int clientSock);
-    void handleRequestBlock(int clientSock, const std::vector<std::uint8_t>& payload);
+    void handleRequestBlock(int clientSock, const std::vector<std::uint8_t>& payload, const std::string& clientIP, int clientPort);
     void sendErrorMessage(int clientSock, const std::string& message);
 
     bool requestBlockFromNeighbor(const NeighborInfo& neighbor, int blockIndex);

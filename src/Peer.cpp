@@ -74,14 +74,20 @@ void Peer::serverLoop() {
         int newsock = accept(sockfd, (struct sockaddr *) &cli_addr, &clilen);
 
         if (newsock >= 0) {
-            std::thread(&Peer::handleConnection, this, newsock).detach();
+            std::thread(&Peer::handleConnection, this, newsock, cli_addr).detach();
         }
     }
 
     close(sockfd);
 }
 
-void Peer::handleConnection(int clientSock) {
+void Peer::handleConnection(int clientSock, sockaddr_in clientAddr) {
+
+    // Captura a porta do cliente
+    char clientIP[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &clientAddr.sin_addr, clientIP, sizeof(clientIP));
+    int clientPort = ntohs(clientAddr.sin_port);
+
     Protocol::MessageType type;
     std::vector<std::uint8_t> payload;
     if (!Protocol::receiveMessage(clientSock, type, payload)) {
@@ -95,7 +101,7 @@ void Peer::handleConnection(int clientSock) {
             handleGetMetadata(clientSock);
             break;
         case Protocol::MessageType::REQUEST_BLOCK:
-            handleRequestBlock(clientSock, payload);
+            handleRequestBlock(clientSock, payload, clientIP, clientPort);
             break;
         default:
             std::cout << "[Servidor " << myPort << "] Tipo de mensagem não suportado: "
@@ -211,7 +217,7 @@ void Peer::handleGetMetadata(int clientSock) {
     }
 }
 
-void Peer::handleRequestBlock(int clientSock, const std::vector<std::uint8_t>& payload) {
+void Peer::handleRequestBlock(int clientSock, const std::vector<std::uint8_t>& payload, const std::string& clientIP, int clientPort) {
     if (payload.size() < sizeof(std::uint32_t)) {
         sendErrorMessage(clientSock, "Payload REQUEST_BLOCK inválido");
         return;
@@ -264,7 +270,7 @@ void Peer::handleRequestBlock(int clientSock, const std::vector<std::uint8_t>& p
     if (!Protocol::sendMessage(clientSock, Protocol::MessageType::BLOCK_DATA, response)) {
         std::cerr << "[Servidor " << myPort << "] Falha ao enviar bloco " << blockIndex << std::endl;
     } else {
-        std::cout << "[Servidor " << myPort << "] Servindo bloco " << blockIndex << std::endl;
+        std::cout << "[Servidor " << myPort << "] Cliente " << clientIP << ":" << clientPort << " Requisitou bloco " << blockIndex << std::endl;
     }
 }
 
